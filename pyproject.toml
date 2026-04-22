@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "learned-indices-neo4j"
+version = "0.1.0"
+description = "Experiments with learned indices for Neo4j graph workloads."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "neo4j>=5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+learned-indices-neo4j = "learned_indices_neo4j.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
