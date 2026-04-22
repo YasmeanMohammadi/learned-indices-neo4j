@@ -35,6 +35,8 @@ The learned index is a two-stage recursive model index:
 - stage 2: `k` independent linear regression models selected by the stage-1 prediction
 - lookup: stage 1 chooses a partition, stage 2 predicts a position, and the index scans a local
   `delta` window around that prediction
+- lookup variants: `RMI-linear` scans the bounded window linearly; `RMI-binary` binary-searches
+  inside the bounded window and then expands over duplicate keys
 - tuning: `k` and `delta` can be selected with cross-validation
 
 Default hyperparameters:
@@ -148,6 +150,7 @@ hyperparameters.
 `lookup_latency_detail.csv` has one row per sampled lookup per index. Use it to compare whether
 RMI fetched/found individual point lookups faster than the B+ tree. It includes the property, query
 value, index type, elements examined, found/covered flags, and measured `lookup_latency_ms`.
+The generated comparison table reports `B-Tree`, `RMI-linear`, and `RMI-binary` separately.
 
 The experiment runner uses an 80/20 train/test split. The RMI is trained on the 80% training split,
 point queries are sampled from the 20% test split, and RMI hyperparameters are cross-validated on

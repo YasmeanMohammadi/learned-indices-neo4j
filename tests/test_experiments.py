@@ -112,11 +112,14 @@ class TestExperiments(unittest.TestCase):
         self.assertIn("Index build time (ms)", main_table)
         self.assertIn("Evaluation execution time (ms)", main_table)
         self.assertIn("Lookup latency (ms, avg)", main_table)
+        self.assertIn("RMI-linear", main_table)
+        self.assertIn("RMI-binary", main_table)
         self.assertIn("validation_coverage", sensitivity)
         self.assertIn("absolute_error", worst_cases)
         self.assertIn("lookup_latency_ms", lookup_latency)
         self.assertIn("B-Tree", lookup_latency)
-        self.assertIn("RMI", lookup_latency)
+        self.assertIn("RMI-linear", lookup_latency)
+        self.assertIn("RMI-binary", lookup_latency)
 
 
 if __name__ == "__main__":

@@ -276,23 +276,35 @@ def run_experiments(
             property_name=property_name,
             order=btree_order,
         )
-        rmi_metrics, worst_cases, rmi_lookup_rows = _evaluate_rmi(
+        rmi_linear_metrics, worst_cases, rmi_linear_lookup_rows = _evaluate_rmi(
             records,
             split.train,
             queries,
             property_name=property_name,
             k=tuned.k,
             delta=tuned.delta,
+            search_mode="linear",
+        )
+        rmi_binary_metrics, _, rmi_binary_lookup_rows = _evaluate_rmi(
+            records,
+            split.train,
+            queries,
+            property_name=property_name,
+            k=tuned.k,
+            delta=tuned.delta,
+            search_mode="binary",
         )
         worst_case_rows.extend(worst_cases)
         lookup_latency_rows.extend(btree_lookup_rows)
-        lookup_latency_rows.extend(rmi_lookup_rows)
+        lookup_latency_rows.extend(rmi_linear_lookup_rows)
+        lookup_latency_rows.extend(rmi_binary_lookup_rows)
 
         main_rows.extend(
             _main_metric_rows(
                 property_name=property_name,
                 btree_metrics=btree_metrics,
-                rmi_metrics=rmi_metrics,
+                rmi_linear_metrics=rmi_linear_metrics,
+                rmi_binary_metrics=rmi_binary_metrics,
             )
         )
 
@@ -370,6 +382,7 @@ def _evaluate_rmi(
     property_name: str,
     k: int,
     delta: int,
+    search_mode: str,
 ) -> tuple[dict[str, float], list[dict[str, object]], list[dict[str, object]]]:
     evaluation_started = perf_counter()
     build_started = perf_counter()
@@ -391,29 +404,35 @@ def _evaluate_rmi(
         started = perf_counter()
         predicted_position = index.predict_position(query.value)
         start, end = index.prediction_window(query.value)
-        found = False
-        for record in index.records[start:end]:
-            if record.position == query.true_position:
-                found = True
-                break
+        if search_mode == "binary":
+            matches = index.exact_binary(query.value)
+            found = any(record.position == query.true_position for record in matches)
+            examined = index.binary_search_comparisons(query.value)
+        else:
+            found = False
+            for record in index.records[start:end]:
+                if record.position == query.true_position:
+                    found = True
+                    break
+            examined = end - start
         latency_ms = (perf_counter() - started) * 1000
         latencies.append(latency_ms)
 
         error = abs(predicted_position - query.true_position)
         is_covered = index.covers_position(sampled_record)
         errors.append(error)
-        elements_examined.append(end - start)
+        elements_examined.append(examined)
         covered += int(is_covered)
         lookup_rows.append(
             {
                 "property": property_name,
-                "index": "RMI",
+                "index": "RMI-binary" if search_mode == "binary" else "RMI-linear",
                 "value": query.value,
                 "node_id": query.node_id,
                 "true_position": query.true_position,
                 "predicted_position": predicted_position,
                 "absolute_error": error,
-                "elements_examined": end - start,
+                "elements_examined": examined,
                 "covered": is_covered,
                 "found": found,
                 "lookup_latency_ms": _format_float(latency_ms),
@@ -461,68 +480,79 @@ def _main_metric_rows(
     *,
     property_name: str,
     btree_metrics: dict[str, float],
-    rmi_metrics: dict[str, float],
+    rmi_linear_metrics: dict[str, float],
+    rmi_binary_metrics: dict[str, float],
 ) -> list[dict[str, object]]:
     return [
         {
             "property": property_name,
             "metric": "MAE (positions)",
             "B-Tree": "",
-            "RMI": _format_float(rmi_metrics["mae"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["mae"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["mae"]),
         },
         {
             "property": property_name,
             "metric": "Elements examined (avg)",
             "B-Tree": _format_float(btree_metrics["elements_examined_avg"]),
-            "RMI": _format_float(rmi_metrics["elements_examined_avg"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["elements_examined_avg"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["elements_examined_avg"]),
         },
         {
             "property": property_name,
             "metric": "Index build time (ms)",
             "B-Tree": _format_float(btree_metrics["build_time_ms"]),
-            "RMI": _format_float(rmi_metrics["build_time_ms"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["build_time_ms"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["build_time_ms"]),
         },
         {
             "property": property_name,
             "metric": "Evaluation execution time (ms)",
             "B-Tree": _format_float(btree_metrics["execution_time_ms"]),
-            "RMI": _format_float(rmi_metrics["execution_time_ms"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["execution_time_ms"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["execution_time_ms"]),
         },
         {
             "property": property_name,
             "metric": "Lookup latency (ms, avg)",
             "B-Tree": _format_float(btree_metrics["latency_avg_ms"]),
-            "RMI": _format_float(rmi_metrics["latency_avg_ms"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["latency_avg_ms"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["latency_avg_ms"]),
         },
         {
             "property": property_name,
             "metric": "Lookup latency (ms, min)",
             "B-Tree": _format_float(btree_metrics["latency_min_ms"]),
-            "RMI": _format_float(rmi_metrics["latency_min_ms"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["latency_min_ms"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["latency_min_ms"]),
         },
         {
             "property": property_name,
             "metric": "Lookup latency (ms, max)",
             "B-Tree": _format_float(btree_metrics["latency_max_ms"]),
-            "RMI": _format_float(rmi_metrics["latency_max_ms"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["latency_max_ms"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["latency_max_ms"]),
         },
         {
             "property": property_name,
             "metric": "RMI coverage",
             "B-Tree": "",
-            "RMI": _format_float(rmi_metrics["coverage"]),
+            "RMI-linear": _format_float(rmi_linear_metrics["coverage"]),
+            "RMI-binary": _format_float(rmi_binary_metrics["coverage"]),
         },
         {
             "property": property_name,
             "metric": "RMI k",
             "B-Tree": "",
-            "RMI": int(rmi_metrics["k"]),
+            "RMI-linear": int(rmi_linear_metrics["k"]),
+            "RMI-binary": int(rmi_binary_metrics["k"]),
         },
         {
             "property": property_name,
             "metric": "RMI delta",
             "B-Tree": "",
-            "RMI": int(rmi_metrics["delta"]),
+            "RMI-linear": int(rmi_linear_metrics["delta"]),
+            "RMI-binary": int(rmi_binary_metrics["delta"]),
         },
     ]
 

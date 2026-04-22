@@ -1,4 +1,6 @@
+from bisect import bisect_left, bisect_right
 from dataclasses import dataclass
+import math
 from statistics import mean
 from typing import Iterable
 
@@ -74,6 +76,7 @@ class RMIIndex:
             k=k,
             total_records=len(self.records),
         )
+        self._keys = [record.value for record in self.records]
         self.delta = self._calibrate_delta() if delta is None else delta
         if self.delta < 0:
             raise ValueError("RMI delta must be non-negative.")
@@ -82,6 +85,9 @@ class RMIIndex:
         return len(self.records)
 
     def exact(self, value: NumericValue) -> list[PropertyRecord]:
+        return self.exact_linear(value)
+
+    def exact_linear(self, value: NumericValue) -> list[PropertyRecord]:
         if not self.records:
             return []
 
@@ -98,6 +104,48 @@ class RMIIndex:
             last += 1
 
         return self.records[first : last + 1]
+
+    def exact_binary(self, value: NumericValue) -> list[PropertyRecord]:
+        if not self.records:
+            return []
+
+        start, end = self._prediction_window(value)
+        first = bisect_left(self._keys, value, start, end)
+        if first >= end or self.records[first].value != value:
+            return []
+
+        last_exclusive = bisect_right(self._keys, value, first, end)
+        while first > 0 and self.records[first - 1].value == value:
+            first -= 1
+        while (
+            last_exclusive < len(self.records)
+            and self.records[last_exclusive].value == value
+        ):
+            last_exclusive += 1
+
+        return self.records[first:last_exclusive]
+
+    def binary_search_comparisons(self, value: NumericValue) -> int:
+        start, end = self._prediction_window(value)
+        window_size = max(1, end - start)
+        comparisons = math.ceil(math.log2(window_size))
+        first = bisect_left(self._keys, value, start, end)
+        if first >= end or self.records[first].value != value:
+            return comparisons
+
+        left_expansion = 0
+        probe = first
+        while probe > 0 and self.records[probe - 1].value == value:
+            left_expansion += 1
+            probe -= 1
+
+        right_expansion = 0
+        probe = bisect_right(self._keys, value, first, end)
+        while probe < len(self.records) and self.records[probe].value == value:
+            right_expansion += 1
+            probe += 1
+
+        return comparisons + left_expansion + right_expansion
 
     def range(
         self,

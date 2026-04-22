@@ -149,6 +149,12 @@ class TestRMIIndex(unittest.TestCase):
 
         self.assertEqual([record.node_id for record in matches], ["movie-2", "movie-3", "movie-4"])
 
+    def test_exact_binary_lookup_uses_prediction_window_and_expands_duplicates(self):
+        matches = self.index.exact_binary(1995)
+
+        self.assertEqual([record.node_id for record in matches], ["movie-2", "movie-3", "movie-4"])
+        self.assertGreaterEqual(self.index.binary_search_comparisons(1995), 1)
+
     def test_range_lookup_returns_expected_window(self):
         matches = self.index.range(1995, 1997)
 
