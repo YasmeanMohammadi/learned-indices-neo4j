@@ -106,12 +106,17 @@ class TestExperiments(unittest.TestCase):
                 encoding="utf-8"
             )
             worst_cases = paths["rmi_worst_case_queries"].read_text(encoding="utf-8")
+            lookup_latency = paths["lookup_latency_detail"].read_text(encoding="utf-8")
 
         self.assertIn("MAE (positions)", main_table)
         self.assertIn("Index build time (ms)", main_table)
         self.assertIn("Evaluation execution time (ms)", main_table)
+        self.assertIn("Lookup latency (ms, avg)", main_table)
         self.assertIn("validation_coverage", sensitivity)
         self.assertIn("absolute_error", worst_cases)
+        self.assertIn("lookup_latency_ms", lookup_latency)
+        self.assertIn("B-Tree", lookup_latency)
+        self.assertIn("RMI", lookup_latency)
 
 
 if __name__ == "__main__":

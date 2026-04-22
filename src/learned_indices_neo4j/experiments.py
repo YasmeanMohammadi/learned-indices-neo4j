@@ -243,6 +243,7 @@ def run_experiments(
     main_rows: list[dict[str, object]] = []
     sensitivity_rows: list[dict[str, object]] = []
     worst_case_rows: list[dict[str, object]] = []
+    lookup_latency_rows: list[dict[str, object]] = []
 
     for offset, property_name in enumerate(properties):
         records = read_records_csv(data_dir / f"{property_name}.csv")
@@ -269,8 +270,13 @@ def run_experiments(
         )
         sensitivity_rows.extend(_grid_result_to_row(result) for result in grid_results)
 
-        btree_metrics = _evaluate_btree(records, queries, order=btree_order)
-        rmi_metrics, worst_cases = _evaluate_rmi(
+        btree_metrics, btree_lookup_rows = _evaluate_btree(
+            records,
+            queries,
+            property_name=property_name,
+            order=btree_order,
+        )
+        rmi_metrics, worst_cases, rmi_lookup_rows = _evaluate_rmi(
             records,
             split.train,
             queries,
@@ -279,6 +285,8 @@ def run_experiments(
             delta=tuned.delta,
         )
         worst_case_rows.extend(worst_cases)
+        lookup_latency_rows.extend(btree_lookup_rows)
+        lookup_latency_rows.extend(rmi_lookup_rows)
 
         main_rows.extend(
             _main_metric_rows(
@@ -293,10 +301,12 @@ def run_experiments(
         "rmi_hyperparameter_sensitivity": results_dir
         / "rmi_hyperparameter_sensitivity.csv",
         "rmi_worst_case_queries": results_dir / "rmi_worst_case_queries.csv",
+        "lookup_latency_detail": results_dir / "lookup_latency_detail.csv",
     }
     _write_dict_rows(output_paths["main_comparison"], main_rows)
     _write_dict_rows(output_paths["rmi_hyperparameter_sensitivity"], sensitivity_rows)
     _write_dict_rows(output_paths["rmi_worst_case_queries"], worst_case_rows)
+    _write_dict_rows(output_paths["lookup_latency_detail"], lookup_latency_rows)
     return output_paths
 
 
@@ -304,29 +314,52 @@ def _evaluate_btree(
     records: list[PropertyRecord],
     queries: list[PointQuery],
     *,
+    property_name: str,
     order: int,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], list[dict[str, object]]]:
     evaluation_started = perf_counter()
     build_started = perf_counter()
     index = BTreeIndex(records, order=order)
     build_time_ms = (perf_counter() - build_started) * 1000
     comparisons = math.ceil(math.log2(len(records))) if len(records) > 1 else len(records)
     latencies: list[float] = []
+    lookup_rows: list[dict[str, object]] = []
 
     for query in queries:
         started = perf_counter()
-        index.exact(query.value)
-        latencies.append((perf_counter() - started) * 1000)
+        matches = index.exact(query.value)
+        latency_ms = (perf_counter() - started) * 1000
+        latencies.append(latency_ms)
+        lookup_rows.append(
+            {
+                "property": property_name,
+                "index": "B-Tree",
+                "value": query.value,
+                "node_id": query.node_id,
+                "true_position": query.true_position,
+                "predicted_position": "",
+                "absolute_error": "",
+                "elements_examined": comparisons,
+                "covered": True,
+                "found": any(record.position == query.true_position for record in matches),
+                "lookup_latency_ms": _format_float(latency_ms),
+                "k": "",
+                "delta": "",
+            }
+        )
 
-    return {
-        "mae": math.nan,
-        "elements_examined_avg": float(comparisons),
-        "build_time_ms": build_time_ms,
-        "execution_time_ms": (perf_counter() - evaluation_started) * 1000,
-        "latency_avg_ms": mean(latencies) if latencies else 0.0,
-        "latency_min_ms": min(latencies) if latencies else 0.0,
-        "latency_max_ms": max(latencies) if latencies else 0.0,
-    }
+    return (
+        {
+            "mae": math.nan,
+            "elements_examined_avg": float(comparisons),
+            "build_time_ms": build_time_ms,
+            "execution_time_ms": (perf_counter() - evaluation_started) * 1000,
+            "latency_avg_ms": mean(latencies) if latencies else 0.0,
+            "latency_min_ms": min(latencies) if latencies else 0.0,
+            "latency_max_ms": max(latencies) if latencies else 0.0,
+        },
+        lookup_rows,
+    )
 
 
 def _evaluate_rmi(
@@ -337,7 +370,7 @@ def _evaluate_rmi(
     property_name: str,
     k: int,
     delta: int,
-) -> tuple[dict[str, float], list[dict[str, object]]]:
+) -> tuple[dict[str, float], list[dict[str, object]], list[dict[str, object]]]:
     evaluation_started = perf_counter()
     build_started = perf_counter()
     index = RMIIndex(records, k=k, delta=delta, training_records=train_records)
@@ -347,6 +380,7 @@ def _evaluate_rmi(
     elements_examined: list[int] = []
     covered = 0
     worst_cases: list[dict[str, object]] = []
+    lookup_rows: list[dict[str, object]] = []
 
     for query in queries:
         sampled_record = PropertyRecord(
@@ -357,16 +391,36 @@ def _evaluate_rmi(
         started = perf_counter()
         predicted_position = index.predict_position(query.value)
         start, end = index.prediction_window(query.value)
+        found = False
         for record in index.records[start:end]:
             if record.position == query.true_position:
+                found = True
                 break
-        latencies.append((perf_counter() - started) * 1000)
+        latency_ms = (perf_counter() - started) * 1000
+        latencies.append(latency_ms)
 
         error = abs(predicted_position - query.true_position)
         is_covered = index.covers_position(sampled_record)
         errors.append(error)
         elements_examined.append(end - start)
         covered += int(is_covered)
+        lookup_rows.append(
+            {
+                "property": property_name,
+                "index": "RMI",
+                "value": query.value,
+                "node_id": query.node_id,
+                "true_position": query.true_position,
+                "predicted_position": predicted_position,
+                "absolute_error": error,
+                "elements_examined": end - start,
+                "covered": is_covered,
+                "found": found,
+                "lookup_latency_ms": _format_float(latency_ms),
+                "k": k,
+                "delta": delta,
+            }
+        )
         worst_cases.append(
             {
                 "property": property_name,
@@ -399,6 +453,7 @@ def _evaluate_rmi(
             "delta": float(delta),
         },
         worst_cases[:20],
+        lookup_rows,
     )
 
 
@@ -435,19 +490,19 @@ def _main_metric_rows(
         },
         {
             "property": property_name,
-            "metric": "Query latency (ms, avg)",
+            "metric": "Lookup latency (ms, avg)",
             "B-Tree": _format_float(btree_metrics["latency_avg_ms"]),
             "RMI": _format_float(rmi_metrics["latency_avg_ms"]),
         },
         {
             "property": property_name,
-            "metric": "Query latency (ms, min)",
+            "metric": "Lookup latency (ms, min)",
             "B-Tree": _format_float(btree_metrics["latency_min_ms"]),
             "RMI": _format_float(rmi_metrics["latency_min_ms"]),
         },
         {
             "property": property_name,
-            "metric": "Query latency (ms, max)",
+            "metric": "Lookup latency (ms, max)",
             "B-Tree": _format_float(btree_metrics["latency_max_ms"]),
             "RMI": _format_float(rmi_metrics["latency_max_ms"]),
         },

@@ -139,10 +139,15 @@ This writes:
 - `results/main_comparison.csv`
 - `results/rmi_hyperparameter_sensitivity.csv`
 - `results/rmi_worst_case_queries.csv`
+- `results/lookup_latency_detail.csv`
 
 `main_comparison.csv` includes index build time, total evaluation execution time, average/min/max
-per-query latency, average elements examined, RMI MAE, RMI coverage, and the selected RMI
+per-lookup latency, average elements examined, RMI MAE, RMI coverage, and the selected RMI
 hyperparameters.
+
+`lookup_latency_detail.csv` has one row per sampled lookup per index. Use it to compare whether
+RMI fetched/found individual point lookups faster than the B+ tree. It includes the property, query
+value, index type, elements examined, found/covered flags, and measured `lookup_latency_ms`.
 
 The experiment runner uses an 80/20 train/test split. The RMI is trained on the 80% training split,
 point queries are sampled from the 20% test split, and RMI hyperparameters are cross-validated on
