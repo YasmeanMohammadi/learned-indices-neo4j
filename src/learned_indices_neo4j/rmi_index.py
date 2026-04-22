@@ -57,13 +57,23 @@ class RMIIndex:
         *,
         k: int = 16,
         delta: int | None = None,
+        training_records: Iterable[PropertyRecord] | None = None,
     ) -> None:
         if k < 1:
             raise ValueError("RMI k must be at least 1.")
 
         self.records = self._normalize_records(records)
         self.k = k
-        self.models = self._train_models(self.records, k=k, total_records=len(self.records))
+        self.training_records = (
+            self._sort_records_preserving_positions(training_records)
+            if training_records is not None
+            else self.records
+        )
+        self.models = self._train_models(
+            self.training_records,
+            k=k,
+            total_records=len(self.records),
+        )
         self.delta = self._calibrate_delta() if delta is None else delta
         if self.delta < 0:
             raise ValueError("RMI delta must be non-negative.")
@@ -119,6 +129,17 @@ class RMIIndex:
     def prediction_error(self, record: PropertyRecord) -> int:
         return abs(self.predict_position(record.value) - record.position)
 
+    def prediction_window(self, value: NumericValue) -> tuple[int, int]:
+        return self._prediction_window(value)
+
+    def elements_examined(self, value: NumericValue) -> int:
+        start, end = self._prediction_window(value)
+        return end - start
+
+    def covers_position(self, record: PropertyRecord) -> bool:
+        start, end = self._prediction_window(record.value)
+        return start <= record.position < end
+
     def _prediction_window(self, value: NumericValue) -> tuple[int, int]:
         predicted_position = self.predict_position(value)
         start = max(0, predicted_position - self.delta)
@@ -166,9 +187,9 @@ class RMIIndex:
         return candidate
 
     def _calibrate_delta(self) -> int:
-        if not self.records:
+        if not self.training_records:
             return 0
-        return max(self.prediction_error(record) for record in self.records)
+        return max(self.prediction_error(record) for record in self.training_records)
 
     @staticmethod
     def _normalize_records(records: Iterable[PropertyRecord]) -> list[PropertyRecord]:
@@ -177,6 +198,12 @@ class RMIIndex:
             PropertyRecord(value=record.value, node_id=record.node_id, position=position)
             for position, record in enumerate(ordered)
         ]
+
+    @staticmethod
+    def _sort_records_preserving_positions(
+        records: Iterable[PropertyRecord],
+    ) -> list[PropertyRecord]:
+        return sorted(records, key=lambda record: (record.value, record.node_id))
 
     @classmethod
     def _train_models(

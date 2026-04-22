@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from os import environ, getenv
 from pathlib import Path
+import tomllib
 
 
 def load_env_file(path: str | Path = ".env") -> None:
@@ -37,4 +38,90 @@ class Neo4jSettings:
             user=getenv("NEO4J_USER", "neo4j"),
             password=getenv("NEO4J_PASSWORD", "password"),
             database=getenv("NEO4J_DATABASE"),
+        )
+
+
+@dataclass(frozen=True)
+class DataSettings:
+    output_dir: Path
+    properties: list[str]
+
+
+@dataclass(frozen=True)
+class BTreeSettings:
+    order: int
+
+
+@dataclass(frozen=True)
+class RMITuningSettings:
+    k_candidates: list[int]
+    delta_candidates: list[int]
+    folds: int
+
+
+@dataclass(frozen=True)
+class RMISettings:
+    k: int
+    delta: int | None
+    auto_delta: bool
+    tuning: RMITuningSettings
+
+
+@dataclass(frozen=True)
+class ExperimentRunSettings:
+    seed: int
+    train_fraction: float
+    query_count: int
+    workload_dir: Path
+    results_dir: Path
+
+
+@dataclass(frozen=True)
+class ExperimentSettings:
+    data: DataSettings
+    btree: BTreeSettings
+    rmi: RMISettings
+    experiment: ExperimentRunSettings
+
+    @classmethod
+    def from_file(cls, path: str | Path = "experiment.toml") -> "ExperimentSettings":
+        config_path = Path(path)
+        raw = {}
+        if config_path.exists():
+            with config_path.open("rb") as file:
+                raw = tomllib.load(file)
+
+        data = raw.get("data", {})
+        btree = raw.get("btree", {})
+        rmi = raw.get("rmi", {})
+        tuning = rmi.get("tuning", {})
+        experiment = raw.get("experiment", {})
+        auto_delta = bool(rmi.get("auto_delta", True))
+        delta = rmi.get("delta")
+
+        return cls(
+            data=DataSettings(
+                output_dir=Path(data.get("output_dir", "data")),
+                properties=list(data.get("properties", ["year", "imdbVotes"])),
+            ),
+            btree=BTreeSettings(order=int(btree.get("order", 64))),
+            rmi=RMISettings(
+                k=int(rmi.get("k", 16)),
+                delta=None if auto_delta else int(delta if delta is not None else 0),
+                auto_delta=auto_delta,
+                tuning=RMITuningSettings(
+                    k_candidates=[int(value) for value in tuning.get("k_candidates", [5, 10, 20, 50])],
+                    delta_candidates=[
+                        int(value) for value in tuning.get("delta_candidates", [10, 25, 50, 100])
+                    ],
+                    folds=int(tuning.get("folds", 5)),
+                ),
+            ),
+            experiment=ExperimentRunSettings(
+                seed=int(experiment.get("seed", 42)),
+                train_fraction=float(experiment.get("train_fraction", 0.8)),
+                query_count=int(experiment.get("query_count", 200)),
+                workload_dir=Path(experiment.get("workload_dir", "workloads")),
+                results_dir=Path(experiment.get("results_dir", "results")),
+            ),
         )

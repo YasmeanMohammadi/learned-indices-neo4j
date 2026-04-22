@@ -12,6 +12,8 @@ python -m pip install -e .
 
 Copy `.env.example` to `.env` and update the Neo4j connection values.
 
+Index and tuning hyperparameters live in `experiment.toml`.
+
 ## Experiment Plan
 
 This first version builds the preprocessing output for the Neo4j Recommendations database:
@@ -34,6 +36,32 @@ The learned index is a two-stage recursive model index:
 - lookup: stage 1 chooses a partition, stage 2 predicts a position, and the index scans a local
   `delta` window around that prediction
 - tuning: `k` and `delta` can be selected with cross-validation
+
+Default hyperparameters:
+
+```toml
+[btree]
+order = 64
+
+[rmi]
+k = 16
+delta = 0
+auto_delta = true
+
+[rmi.tuning]
+k_candidates = [5, 10, 20, 50]
+delta_candidates = [10, 25, 50, 100]
+folds = 5
+
+[experiment]
+seed = 42
+train_fraction = 0.8
+query_count = 200
+workload_dir = "workloads"
+results_dir = "results"
+```
+
+CLI flags override `experiment.toml` for one-off runs.
 
 Neo4j's native range indexes can also be created for the same fields. These are the database-side
 baseline indexes for Cypher query planning.
@@ -87,6 +115,48 @@ Tune the RMI:
 python -m learned_indices_neo4j tune-rmi data/year.csv --k-candidates 4,8,16,32
 python -m learned_indices_neo4j tune-rmi data/imdbVotes.csv --k-candidates 4,8,16,32
 python -m learned_indices_neo4j query data/year.csv --exact 1995 --index rmi --tune-rmi --limit 20
+```
+
+Generate the 200-query point lookup workloads from the held-out 20% test split:
+
+```bash
+python -m learned_indices_neo4j generate-workload
+```
+
+This writes:
+
+- `workloads/year_point_queries.csv`
+- `workloads/imdbVotes_point_queries.csv`
+
+Run the full experiment and generate report tables:
+
+```bash
+python -m learned_indices_neo4j run-experiment
+```
+
+This writes:
+
+- `results/main_comparison.csv`
+- `results/rmi_hyperparameter_sensitivity.csv`
+- `results/rmi_worst_case_queries.csv`
+
+`main_comparison.csv` includes index build time, total evaluation execution time, average/min/max
+per-query latency, average elements examined, RMI MAE, RMI coverage, and the selected RMI
+hyperparameters.
+
+The experiment runner uses an 80/20 train/test split. The RMI is trained on the 80% training split,
+point queries are sampled from the 20% test split, and RMI hyperparameters are cross-validated on
+the training split. The grid defaults are `k = [5, 10, 20, 50]` and
+`delta = [10, 25, 50, 100]`.
+
+If no configuration in the configured `delta` grid covers every validation query, the runner
+chooses the highest-coverage configuration and reports `RMI coverage` in the main table. Increase
+`delta_candidates` if you want correctness-constrained runs with full coverage.
+
+Use a different config file:
+
+```bash
+python -m learned_indices_neo4j --config experiment.toml query data/year.csv --exact 1995 --index rmi
 ```
 
 Show CLI help:

@@ -3,7 +3,8 @@ import sys
 from pathlib import Path
 
 from learned_indices_neo4j.btree_index import BTreeIndex
-from learned_indices_neo4j.config import Neo4jSettings
+from learned_indices_neo4j.config import ExperimentSettings, Neo4jSettings
+from learned_indices_neo4j.experiments import generate_workloads, run_experiments
 from learned_indices_neo4j.io import read_records_csv, write_records_csv
 from learned_indices_neo4j.neo4j_extractor import (
     EmptyExtractionError,
@@ -21,6 +22,12 @@ def build_parser() -> argparse.ArgumentParser:
         prog="learned-indices-neo4j",
         description="Build baseline sorted-array indexes from Neo4j Recommendations properties.",
     )
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=Path("experiment.toml"),
+        help="Experiment config file with index and tuning hyperparameters.",
+    )
     subparsers = parser.add_subparsers(dest="command")
 
     extract = subparsers.add_parser(
@@ -37,7 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument(
         "--output-dir",
         type=Path,
-        default=Path("data"),
+        default=None,
         help="Directory where preprocessed CSV files should be written.",
     )
     extract.add_argument(
@@ -81,10 +88,10 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument(
         "--order",
         type=int,
-        default=64,
+        default=None,
         help="B-tree order when --index btree is selected.",
     )
-    query.add_argument("--rmi-k", type=int, default=16, help="Number of stage-2 RMI models.")
+    query.add_argument("--rmi-k", type=int, default=None, help="Number of stage-2 RMI models.")
     query.add_argument(
         "--rmi-delta",
         type=int,
@@ -98,7 +105,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     query.add_argument(
         "--rmi-k-candidates",
-        default="4,8,16,32",
+        default=None,
         help="Comma-separated k candidates used by --tune-rmi.",
     )
     query.add_argument(
@@ -106,24 +113,50 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional comma-separated delta candidates used by --tune-rmi.",
     )
-    query.add_argument("--rmi-folds", type=int, default=5, help="Cross-validation folds.")
+    query.add_argument("--rmi-folds", type=int, default=None, help="Cross-validation folds.")
 
     tune = subparsers.add_parser(
         "tune-rmi",
         help="Cross-validate RMI k and delta for a preprocessed CSV file.",
     )
     tune.add_argument("csv_path", type=Path)
-    tune.add_argument("--k-candidates", default="4,8,16,32")
+    tune.add_argument("--k-candidates", default=None)
     tune.add_argument("--delta-candidates", default=None)
-    tune.add_argument("--folds", type=int, default=5)
+    tune.add_argument("--folds", type=int, default=None)
+
+    workload = subparsers.add_parser(
+        "generate-workload",
+        help="Generate random point lookup query files from the held-out test split.",
+    )
+    workload.add_argument("--data-dir", type=Path, default=None)
+    workload.add_argument("--workload-dir", type=Path, default=None)
+    workload.add_argument("--query-count", type=int, default=None)
+    workload.add_argument("--seed", type=int, default=None)
+    workload.add_argument("--train-fraction", type=float, default=None)
+
+    experiment = subparsers.add_parser(
+        "run-experiment",
+        help="Tune RMI and write report-ready evaluation CSV files.",
+    )
+    experiment.add_argument("--data-dir", type=Path, default=None)
+    experiment.add_argument("--workload-dir", type=Path, default=None)
+    experiment.add_argument("--results-dir", type=Path, default=None)
+    experiment.add_argument("--query-count", type=int, default=None)
+    experiment.add_argument("--seed", type=int, default=None)
+    experiment.add_argument("--train-fraction", type=float, default=None)
+    experiment.add_argument("--k-candidates", default=None)
+    experiment.add_argument("--delta-candidates", default=None)
+    experiment.add_argument("--folds", type=int, default=None)
 
     return parser
 
 
 def extract_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
     settings = Neo4jSettings.from_env()
     database = args.database if args.database is not None else settings.database
-    properties = args.properties or sorted(PROPERTY_QUERIES)
+    properties = args.properties or config.data.properties
+    output_dir = args.output_dir or config.data.output_dir
 
     for property_name in properties:
         pairs = extract_property_pairs(settings, property_name, database=database)
@@ -134,7 +167,7 @@ def extract_command(args: argparse.Namespace) -> int:
                 "Check that your Neo4j database is the Recommendations dataset and that the "
                 "property exists on Movie nodes."
             )
-        output_path = args.output_dir / f"{property_name}.csv"
+        output_path = output_dir / f"{property_name}.csv"
         write_records_csv(output_path, records)
         print(f"Wrote {len(records)} records to {output_path}")
 
@@ -142,9 +175,10 @@ def extract_command(args: argparse.Namespace) -> int:
 
 
 def create_indexes_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
     settings = Neo4jSettings.from_env()
     database = args.database if args.database is not None else settings.database
-    properties = args.properties or sorted(PROPERTY_QUERIES)
+    properties = args.properties or config.data.properties
 
     try:
         index_names = create_neo4j_range_indexes(settings, properties, database=database)
@@ -164,22 +198,29 @@ def parse_int_list(value: str | None) -> list[int] | None:
 
 
 def query_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
     records = read_records_csv(args.csv_path)
     rmi_tuning = None
+    rmi_k = args.rmi_k if args.rmi_k is not None else config.rmi.k
+    rmi_delta = args.rmi_delta if args.rmi_delta is not None else config.rmi.delta
+    btree_order = args.order if args.order is not None else config.btree.order
+
     if args.index == "rmi" and args.tune_rmi:
         rmi_tuning = tune_rmi(
             records,
-            k_candidates=parse_int_list(args.rmi_k_candidates) or [16],
-            delta_candidates=parse_int_list(args.rmi_delta_candidates),
-            folds=args.rmi_folds,
+            k_candidates=parse_int_list(args.rmi_k_candidates) or config.rmi.tuning.k_candidates,
+            delta_candidates=parse_int_list(args.rmi_delta_candidates)
+            if args.rmi_delta_candidates is not None
+            else config.rmi.tuning.delta_candidates or None,
+            folds=args.rmi_folds or config.rmi.tuning.folds,
         )
-        args.rmi_k = rmi_tuning.k
-        args.rmi_delta = rmi_tuning.delta
+        rmi_k = rmi_tuning.k
+        rmi_delta = rmi_tuning.delta
 
     if args.index == "btree":
-        index = BTreeIndex(records, order=args.order)
+        index = BTreeIndex(records, order=btree_order)
     elif args.index == "rmi":
-        index = RMIIndex(records, k=args.rmi_k, delta=args.rmi_delta)
+        index = RMIIndex(records, k=rmi_k, delta=rmi_delta)
     else:
         index = SortedArrayIndex(records)
 
@@ -209,18 +250,57 @@ def query_command(args: argparse.Namespace) -> int:
 
 
 def tune_rmi_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
     records = read_records_csv(args.csv_path)
     result = tune_rmi(
         records,
-        k_candidates=parse_int_list(args.k_candidates) or [16],
-        delta_candidates=parse_int_list(args.delta_candidates),
-        folds=args.folds,
+        k_candidates=parse_int_list(args.k_candidates) or config.rmi.tuning.k_candidates,
+        delta_candidates=parse_int_list(args.delta_candidates)
+        if args.delta_candidates is not None
+        else config.rmi.tuning.delta_candidates or None,
+        folds=args.folds or config.rmi.tuning.folds,
     )
     print(f"Best RMI k: {result.k}")
     print(f"Best RMI delta: {result.delta}")
     print(f"Mean absolute prediction error: {result.mean_abs_error:.2f}")
     print(f"Max absolute prediction error: {result.max_abs_error}")
     print(f"Delta coverage: {result.coverage:.3f}")
+    return 0
+
+
+def generate_workload_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
+    paths = generate_workloads(
+        data_dir=args.data_dir or config.data.output_dir,
+        workload_dir=args.workload_dir or config.experiment.workload_dir,
+        properties=config.data.properties,
+        train_fraction=args.train_fraction or config.experiment.train_fraction,
+        query_count=args.query_count or config.experiment.query_count,
+        seed=args.seed if args.seed is not None else config.experiment.seed,
+    )
+    for property_name, path in paths.items():
+        print(f"Wrote {property_name} point queries to {path}")
+    return 0
+
+
+def run_experiment_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
+    paths = run_experiments(
+        data_dir=args.data_dir or config.data.output_dir,
+        workload_dir=args.workload_dir or config.experiment.workload_dir,
+        results_dir=args.results_dir or config.experiment.results_dir,
+        properties=config.data.properties,
+        train_fraction=args.train_fraction or config.experiment.train_fraction,
+        query_count=args.query_count or config.experiment.query_count,
+        seed=args.seed if args.seed is not None else config.experiment.seed,
+        btree_order=config.btree.order,
+        k_candidates=parse_int_list(args.k_candidates) or config.rmi.tuning.k_candidates,
+        delta_candidates=parse_int_list(args.delta_candidates)
+        or config.rmi.tuning.delta_candidates,
+        folds=args.folds or config.rmi.tuning.folds,
+    )
+    for name, path in paths.items():
+        print(f"Wrote {name}: {path}")
     return 0
 
 
@@ -236,6 +316,10 @@ def main(argv: list[str] | None = None) -> int:
         return query_command(args)
     if args.command == "tune-rmi":
         return tune_rmi_command(args)
+    if args.command == "generate-workload":
+        return generate_workload_command(args)
+    if args.command == "run-experiment":
+        return run_experiment_command(args)
 
     parser.print_help()
     return 0

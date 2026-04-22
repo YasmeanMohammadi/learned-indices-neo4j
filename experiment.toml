@@ -1,0 +1,23 @@
+[data]
+output_dir = "data"
+properties = ["year", "imdbVotes"]
+
+[btree]
+order = 64
+
+[rmi]
+k = 16
+delta = 0
+auto_delta = true
+
+[rmi.tuning]
+k_candidates = [5, 10, 20, 50]
+delta_candidates = [10, 25, 50, 100]
+folds = 5
+
+[experiment]
+seed = 42
+train_fraction = 0.8
+query_count = 200
+workload_dir = "workloads"
+results_dir = "results"
