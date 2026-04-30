@@ -33,10 +33,8 @@ The learned index is a two-stage recursive model index:
 
 - stage 1: one linear regression model trained on all `(value, position)` pairs
 - stage 2: `k` independent linear regression models selected by the stage-1 prediction
-- lookup: stage 1 chooses a partition, stage 2 predicts a position, and the index scans a local
-  `delta` window around that prediction
-- lookup variants: `RMI-linear` scans the bounded window linearly; `RMI-binary` binary-searches
-  inside the bounded window and then expands over duplicate keys
+- lookup: stage 1 chooses a partition, stage 2 predicts a position, and the index binary-searches
+  inside a bounded `delta` window around that prediction, then expands over duplicate keys
 - tuning: `k` and `delta` can be selected with cross-validation
 
 Default hyperparameters:
@@ -130,6 +128,17 @@ This writes:
 - `workloads/year_point_queries.csv`
 - `workloads/imdbVotes_point_queries.csv`
 
+Generate the 200-query range workloads from the held-out 20% test split:
+
+```bash
+python -m learned_indices_neo4j generate-range-workload
+```
+
+This writes:
+
+- `workloads/year_range_queries.csv`
+- `workloads/imdbVotes_range_queries.csv`
+
 Run the full experiment and generate report tables:
 
 ```bash
@@ -144,13 +153,59 @@ This writes:
 - `results/lookup_latency_detail.csv`
 
 `main_comparison.csv` includes index build time, total evaluation execution time, average/min/max
-per-lookup latency, average elements examined, RMI MAE, RMI coverage, and the selected RMI
-hyperparameters.
+per-lookup latency, average binary-search comparisons, RMI MAE, RMI coverage, and the selected
+RMI hyperparameters.
 
 `lookup_latency_detail.csv` has one row per sampled lookup per index. Use it to compare whether
 RMI fetched/found individual point lookups faster than the B+ tree. It includes the property, query
-value, index type, elements examined, found/covered flags, and measured `lookup_latency_ms`.
-The generated comparison table reports `B-Tree`, `RMI-linear`, and `RMI-binary` separately.
+value, index type, binary-search comparison count, found/covered flags, and measured
+`lookup_latency_ms`.
+The generated comparison table reports `B-Tree`, `RMI`, and `PGM-static`.
+
+Run the range-query experiment:
+
+```bash
+python -m learned_indices_neo4j run-range-experiment
+```
+
+This writes:
+
+- `results/range_main_comparison.csv`
+- `results/range_worst_case_queries.csv`
+- `results/range_lookup_latency_detail.csv`
+
+`range_main_comparison.csv` reports start and end boundary MAE, average result-count error,
+average binary-search comparisons, build time, evaluation time, average/min/max lookup latency,
+and exact range correctness for `B-Tree`, `RMI`, and `PGM-static`.
+
+Run the distribution-shift experiment:
+
+```bash
+python -m learned_indices_neo4j run-distribution-shift
+```
+
+Optional flags:
+
+```bash
+python -m learned_indices_neo4j run-distribution-shift --shift-fractions 0.05,0.10,0.20
+python -m learned_indices_neo4j run-distribution-shift --point-query-count 200 --range-query-count 200
+```
+
+This writes:
+
+- `results/distribution_shift_summary.csv`
+- `results/distribution_shift_point.csv`
+- `results/distribution_shift_range.csv`
+
+The shift runner evaluates three phases:
+
+- `baseline`
+- `shifted_stale_models`
+- `shifted_retrained_models`
+
+For `year`, it simulates `recent_tail` and `duplicate_burst` shifts. For `imdbVotes`, it simulates
+`high_tail` and `duplicate_burst` shifts. The summary tables report how MAE, coverage, binary-search
+comparisons, lookup latency, and exact correctness change before and after retraining.
 
 The experiment runner uses an 80/20 train/test split. The RMI is trained on the 80% training split,
 point queries are sampled from the 20% test split, and RMI hyperparameters are cross-validated on

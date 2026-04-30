@@ -4,7 +4,13 @@ from pathlib import Path
 
 from learned_indices_neo4j.btree_index import BTreeIndex
 from learned_indices_neo4j.config import ExperimentSettings, Neo4jSettings
-from learned_indices_neo4j.experiments import generate_workloads, run_experiments
+from learned_indices_neo4j.distribution_shift import run_distribution_shift_experiment
+from learned_indices_neo4j.experiments import (
+    generate_range_workloads,
+    generate_workloads,
+    run_experiments,
+    run_range_experiments,
+)
 from learned_indices_neo4j.io import read_records_csv, write_records_csv
 from learned_indices_neo4j.neo4j_extractor import (
     EmptyExtractionError,
@@ -12,6 +18,7 @@ from learned_indices_neo4j.neo4j_extractor import (
     create_neo4j_range_indexes,
     extract_property_pairs,
 )
+from learned_indices_neo4j.pgm_index import StaticPGMIndex
 from learned_indices_neo4j.records import preprocess_pairs
 from learned_indices_neo4j.rmi_index import RMIIndex, tune_rmi
 from learned_indices_neo4j.sorted_array_index import SortedArrayIndex
@@ -81,7 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     query.add_argument("--limit", type=int, default=None)
     query.add_argument(
         "--index",
-        choices=["sorted-array", "btree", "rmi"],
+        choices=["sorted-array", "btree", "rmi", "pgm"],
         default="sorted-array",
         help="Local index implementation to use for CSV lookups.",
     )
@@ -90,6 +97,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="B-tree order when --index btree is selected.",
+    )
+    query.add_argument(
+        "--pgm-epsilon",
+        type=int,
+        default=None,
+        help="PGM approximation error bound when --index pgm is selected.",
     )
     query.add_argument("--rmi-k", type=int, default=None, help="Number of stage-2 RMI models.")
     query.add_argument(
@@ -134,6 +147,16 @@ def build_parser() -> argparse.ArgumentParser:
     workload.add_argument("--seed", type=int, default=None)
     workload.add_argument("--train-fraction", type=float, default=None)
 
+    range_workload = subparsers.add_parser(
+        "generate-range-workload",
+        help="Generate random range query files from the held-out test split.",
+    )
+    range_workload.add_argument("--data-dir", type=Path, default=None)
+    range_workload.add_argument("--workload-dir", type=Path, default=None)
+    range_workload.add_argument("--query-count", type=int, default=None)
+    range_workload.add_argument("--seed", type=int, default=None)
+    range_workload.add_argument("--train-fraction", type=float, default=None)
+
     experiment = subparsers.add_parser(
         "run-experiment",
         help="Tune RMI and write report-ready evaluation CSV files.",
@@ -147,6 +170,35 @@ def build_parser() -> argparse.ArgumentParser:
     experiment.add_argument("--k-candidates", default=None)
     experiment.add_argument("--delta-candidates", default=None)
     experiment.add_argument("--folds", type=int, default=None)
+
+    range_experiment = subparsers.add_parser(
+        "run-range-experiment",
+        help="Write report-ready evaluation CSV files for range queries.",
+    )
+    range_experiment.add_argument("--data-dir", type=Path, default=None)
+    range_experiment.add_argument("--workload-dir", type=Path, default=None)
+    range_experiment.add_argument("--results-dir", type=Path, default=None)
+    range_experiment.add_argument("--query-count", type=int, default=None)
+    range_experiment.add_argument("--seed", type=int, default=None)
+    range_experiment.add_argument("--train-fraction", type=float, default=None)
+    range_experiment.add_argument("--k-candidates", default=None)
+    range_experiment.add_argument("--delta-candidates", default=None)
+    range_experiment.add_argument("--folds", type=int, default=None)
+
+    shift_experiment = subparsers.add_parser(
+        "run-distribution-shift",
+        help="Evaluate learned indexes before and after controlled distribution shifts.",
+    )
+    shift_experiment.add_argument("--data-dir", type=Path, default=None)
+    shift_experiment.add_argument("--results-dir", type=Path, default=None)
+    shift_experiment.add_argument("--point-query-count", type=int, default=None)
+    shift_experiment.add_argument("--range-query-count", type=int, default=None)
+    shift_experiment.add_argument("--train-fraction", type=float, default=None)
+    shift_experiment.add_argument("--seed", type=int, default=None)
+    shift_experiment.add_argument("--shift-fractions", default="0.05,0.10,0.20")
+    shift_experiment.add_argument("--k-candidates", default=None)
+    shift_experiment.add_argument("--delta-candidates", default=None)
+    shift_experiment.add_argument("--folds", type=int, default=None)
 
     return parser
 
@@ -197,6 +249,12 @@ def parse_int_list(value: str | None) -> list[int] | None:
     return [int(part.strip()) for part in value.split(",") if part.strip()]
 
 
+def parse_float_list(value: str | None) -> list[float] | None:
+    if value is None:
+        return None
+    return [float(part.strip()) for part in value.split(",") if part.strip()]
+
+
 def query_command(args: argparse.Namespace) -> int:
     config = ExperimentSettings.from_file(args.config)
     records = read_records_csv(args.csv_path)
@@ -204,6 +262,7 @@ def query_command(args: argparse.Namespace) -> int:
     rmi_k = args.rmi_k if args.rmi_k is not None else config.rmi.k
     rmi_delta = args.rmi_delta if args.rmi_delta is not None else config.rmi.delta
     btree_order = args.order if args.order is not None else config.btree.order
+    pgm_epsilon = args.pgm_epsilon if args.pgm_epsilon is not None else config.pgm.epsilon
 
     if args.index == "rmi" and args.tune_rmi:
         rmi_tuning = tune_rmi(
@@ -219,6 +278,8 @@ def query_command(args: argparse.Namespace) -> int:
 
     if args.index == "btree":
         index = BTreeIndex(records, order=btree_order)
+    elif args.index == "pgm":
+        index = StaticPGMIndex(records, epsilon=pgm_epsilon)
     elif args.index == "rmi":
         index = RMIIndex(records, k=rmi_k, delta=rmi_delta)
     else:
@@ -239,6 +300,8 @@ def query_command(args: argparse.Namespace) -> int:
 
     print(f"Matched {len(matches)} of {len(index)} records")
     print(f"Index: {args.index}")
+    if args.index == "pgm":
+        print(f"PGM epsilon: {index.epsilon}")
     if args.index == "rmi":
         print(f"RMI k: {index.k}")
         print(f"RMI delta: {index.delta}")
@@ -283,6 +346,21 @@ def generate_workload_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def generate_range_workload_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
+    paths = generate_range_workloads(
+        data_dir=args.data_dir or config.data.output_dir,
+        workload_dir=args.workload_dir or config.experiment.workload_dir,
+        properties=config.data.properties,
+        train_fraction=args.train_fraction or config.experiment.train_fraction,
+        query_count=args.query_count or config.experiment.query_count,
+        seed=args.seed if args.seed is not None else config.experiment.seed,
+    )
+    for property_name, path in paths.items():
+        print(f"Wrote {property_name} range queries to {path}")
+    return 0
+
+
 def run_experiment_command(args: argparse.Namespace) -> int:
     config = ExperimentSettings.from_file(args.config)
     paths = run_experiments(
@@ -294,6 +372,52 @@ def run_experiment_command(args: argparse.Namespace) -> int:
         query_count=args.query_count or config.experiment.query_count,
         seed=args.seed if args.seed is not None else config.experiment.seed,
         btree_order=config.btree.order,
+        pgm_epsilon_candidates=config.pgm.tuning.epsilon_candidates,
+        k_candidates=parse_int_list(args.k_candidates) or config.rmi.tuning.k_candidates,
+        delta_candidates=parse_int_list(args.delta_candidates)
+        or config.rmi.tuning.delta_candidates,
+        folds=args.folds or config.rmi.tuning.folds,
+    )
+    for name, path in paths.items():
+        print(f"Wrote {name}: {path}")
+    return 0
+
+
+def run_range_experiment_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
+    paths = run_range_experiments(
+        data_dir=args.data_dir or config.data.output_dir,
+        workload_dir=args.workload_dir or config.experiment.workload_dir,
+        results_dir=args.results_dir or config.experiment.results_dir,
+        properties=config.data.properties,
+        train_fraction=args.train_fraction or config.experiment.train_fraction,
+        query_count=args.query_count or config.experiment.query_count,
+        seed=args.seed if args.seed is not None else config.experiment.seed,
+        btree_order=config.btree.order,
+        pgm_epsilon_candidates=config.pgm.tuning.epsilon_candidates,
+        k_candidates=parse_int_list(args.k_candidates) or config.rmi.tuning.k_candidates,
+        delta_candidates=parse_int_list(args.delta_candidates)
+        or config.rmi.tuning.delta_candidates,
+        folds=args.folds or config.rmi.tuning.folds,
+    )
+    for name, path in paths.items():
+        print(f"Wrote {name}: {path}")
+    return 0
+
+
+def run_distribution_shift_command(args: argparse.Namespace) -> int:
+    config = ExperimentSettings.from_file(args.config)
+    paths = run_distribution_shift_experiment(
+        data_dir=args.data_dir or config.data.output_dir,
+        results_dir=args.results_dir or config.experiment.results_dir,
+        properties=config.data.properties,
+        train_fraction=args.train_fraction or config.experiment.train_fraction,
+        point_query_count=args.point_query_count or config.experiment.query_count,
+        range_query_count=args.range_query_count or config.experiment.query_count,
+        shift_fractions=parse_float_list(args.shift_fractions) or [0.05, 0.10, 0.20],
+        seed=args.seed if args.seed is not None else config.experiment.seed,
+        btree_order=config.btree.order,
+        pgm_epsilon_candidates=config.pgm.tuning.epsilon_candidates,
         k_candidates=parse_int_list(args.k_candidates) or config.rmi.tuning.k_candidates,
         delta_candidates=parse_int_list(args.delta_candidates)
         or config.rmi.tuning.delta_candidates,
@@ -318,8 +442,14 @@ def main(argv: list[str] | None = None) -> int:
         return tune_rmi_command(args)
     if args.command == "generate-workload":
         return generate_workload_command(args)
+    if args.command == "generate-range-workload":
+        return generate_range_workload_command(args)
     if args.command == "run-experiment":
         return run_experiment_command(args)
+    if args.command == "run-range-experiment":
+        return run_range_experiment_command(args)
+    if args.command == "run-distribution-shift":
+        return run_distribution_shift_command(args)
 
     parser.print_help()
     return 0

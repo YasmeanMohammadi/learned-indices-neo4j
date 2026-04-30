@@ -11,6 +11,7 @@ if str(SRC_DIR) not in sys.path:
 from learned_indices_neo4j.btree_index import BTreeIndex
 from learned_indices_neo4j.io import read_records_csv, write_records_csv
 from learned_indices_neo4j.neo4j_extractor import PROPERTY_QUERIES, PROPERTY_SPECS
+from learned_indices_neo4j.pgm_index import StaticPGMIndex
 from learned_indices_neo4j.records import preprocess_pairs
 from learned_indices_neo4j.rmi_index import LinearModel, RMIIndex, tune_rmi
 from learned_indices_neo4j.sorted_array_index import SortedArrayIndex
@@ -181,6 +182,47 @@ class TestRMIIndex(unittest.TestCase):
         self.assertIn(result.delta, {0, 1, 2, 4})
         self.assertGreaterEqual(result.coverage, 0)
         self.assertLessEqual(result.coverage, 1)
+
+
+class TestPGMIndex(unittest.TestCase):
+    def setUp(self):
+        self.records = preprocess_pairs(
+            [
+                (1994, "movie-1"),
+                (1995, "movie-2"),
+                (1995, "movie-3"),
+                (1995, "movie-4"),
+                (1996, "movie-5"),
+                (1997, "movie-6"),
+                (2001, "movie-7"),
+            ]
+        )
+        self.index = StaticPGMIndex(self.records, epsilon=2)
+
+    def test_exact_lookup_expands_duplicate_keys(self):
+        matches = self.index.exact(1995)
+
+        self.assertEqual([record.node_id for record in matches], ["movie-2", "movie-3", "movie-4"])
+
+    def test_range_lookup_returns_expected_slice(self):
+        matches = self.index.range(1995, 1997)
+
+        self.assertEqual(
+            [(record.value, record.node_id) for record in matches],
+            [
+                (1995, "movie-2"),
+                (1995, "movie-3"),
+                (1995, "movie-4"),
+                (1996, "movie-5"),
+                (1997, "movie-6"),
+            ],
+        )
+
+    def test_binary_search_comparisons_and_prediction_window_are_available(self):
+        start, end = self.index.prediction_window(1995)
+
+        self.assertLess(start, end)
+        self.assertGreaterEqual(self.index.binary_search_comparisons(1995), 1)
 
 
 class TestCsvIo(unittest.TestCase):

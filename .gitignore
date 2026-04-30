@@ -21,3 +21,5 @@ htmlcov/
 
 .env
 *.log
+paper/
+results/

@@ -51,7 +51,7 @@ class RMITuningResult:
 
 
 class RMIIndex:
-    """Two-stage recursive model index with bounded local scans."""
+    """Two-stage recursive model index with bounded binary refinement."""
 
     def __init__(
         self,
@@ -85,7 +85,7 @@ class RMIIndex:
         return len(self.records)
 
     def exact(self, value: NumericValue) -> list[PropertyRecord]:
-        return self.exact_linear(value)
+        return self.exact_binary(value)
 
     def exact_linear(self, value: NumericValue) -> list[PropertyRecord]:
         if not self.records:
@@ -159,17 +159,11 @@ class RMIIndex:
             return []
 
         start = self._lower_bound(minimum, include_minimum=include_minimum)
-        matches: list[PropertyRecord] = []
-
-        for record in self.records[start:]:
-            if maximum is not None:
-                if include_maximum and record.value > maximum:
-                    break
-                if not include_maximum and record.value >= maximum:
-                    break
-            matches.append(record)
-
-        return matches
+        if maximum is None:
+            end = len(self.records)
+        else:
+            end = self._upper_bound(maximum, include_maximum=include_maximum)
+        return self.records[start:end]
 
     def predict_position(self, value: NumericValue) -> int:
         return self._predict_position_with_models(self.models, value)
@@ -181,8 +175,15 @@ class RMIIndex:
         return self._prediction_window(value)
 
     def elements_examined(self, value: NumericValue) -> int:
+        return self.binary_search_comparisons(value)
+
+    def boundary_search_comparisons(self, value: NumericValue | None) -> int:
+        if value is None or not self.records:
+            return 0
+
         start, end = self._prediction_window(value)
-        return end - start
+        window_size = max(1, end - start)
+        return math.ceil(math.log2(window_size))
 
     def covers_position(self, record: PropertyRecord) -> bool:
         start, end = self._prediction_window(record.value)
@@ -204,26 +205,11 @@ class RMIIndex:
             return 0
 
         start, end = self._prediction_window(value)
-        candidate = None
-        for index in range(start, end):
-            record_value = self.records[index].value
-            if include_minimum and record_value >= value:
-                candidate = index
-                break
-            if not include_minimum and record_value > value:
-                candidate = index
-                break
-
-        if candidate is None:
-            candidate = end
-            while candidate < len(self.records):
-                record_value = self.records[candidate].value
-                if include_minimum and record_value >= value:
-                    break
-                if not include_minimum and record_value > value:
-                    break
-                candidate += 1
-
+        candidate = (
+            bisect_left(self._keys, value, start, end)
+            if include_minimum
+            else bisect_right(self._keys, value, start, end)
+        )
         while candidate > 0:
             previous = self.records[candidate - 1].value
             if include_minimum and previous < value:
@@ -231,7 +217,34 @@ class RMIIndex:
             if not include_minimum and previous <= value:
                 break
             candidate -= 1
+        while candidate < len(self.records):
+            current = self.records[candidate].value
+            if include_minimum and current >= value:
+                break
+            if not include_minimum and current > value:
+                break
+            candidate += 1
+        return candidate
 
+    def _upper_bound(
+        self,
+        value: NumericValue,
+        *,
+        include_maximum: bool,
+    ) -> int:
+        start, end = self._prediction_window(value)
+        candidate = (
+            bisect_right(self._keys, value, start, end)
+            if include_maximum
+            else bisect_left(self._keys, value, start, end)
+        )
+        while candidate < len(self.records):
+            current = self.records[candidate].value
+            if include_maximum and current > value:
+                break
+            if not include_maximum and current >= value:
+                break
+            candidate += 1
         return candidate
 
     def _calibrate_delta(self) -> int:

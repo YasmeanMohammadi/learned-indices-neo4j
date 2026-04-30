@@ -41,6 +41,8 @@ class TestExperimentSettings(unittest.TestCase):
         self.assertEqual(settings.data.output_dir, Path("data"))
         self.assertEqual(settings.data.properties, ["year", "imdbVotes"])
         self.assertEqual(settings.btree.order, 64)
+        self.assertEqual(settings.pgm.epsilon, 64)
+        self.assertEqual(settings.pgm.tuning.epsilon_candidates, [8, 16, 32, 64, 128])
         self.assertEqual(settings.rmi.k, 16)
         self.assertIsNone(settings.rmi.delta)
         self.assertTrue(settings.rmi.auto_delta)
@@ -64,6 +66,12 @@ properties = ["year"]
 
 [btree]
 order = 32
+
+[pgm]
+epsilon = 24
+
+[pgm.tuning]
+epsilon_candidates = [8, 24, 48]
 
 [rmi]
 k = 8
@@ -90,6 +98,8 @@ results_dir = "tmp-results"
         self.assertEqual(settings.data.output_dir, Path("tmp-data"))
         self.assertEqual(settings.data.properties, ["year"])
         self.assertEqual(settings.btree.order, 32)
+        self.assertEqual(settings.pgm.epsilon, 24)
+        self.assertEqual(settings.pgm.tuning.epsilon_candidates, [8, 24, 48])
         self.assertEqual(settings.rmi.k, 8)
         self.assertEqual(settings.rmi.delta, 12)
         self.assertFalse(settings.rmi.auto_delta)

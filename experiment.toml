@@ -5,6 +5,12 @@ properties = ["year", "imdbVotes"]
 [btree]
 order = 64
 
+[pgm]
+epsilon = 64
+
+[pgm.tuning]
+epsilon_candidates = [8, 16, 32, 64, 128]
+
 [rmi]
 k = 16
 delta = 0

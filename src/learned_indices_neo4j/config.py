@@ -53,6 +53,17 @@ class BTreeSettings:
 
 
 @dataclass(frozen=True)
+class PGMTuningSettings:
+    epsilon_candidates: list[int]
+
+
+@dataclass(frozen=True)
+class PGMSettings:
+    epsilon: int
+    tuning: PGMTuningSettings
+
+
+@dataclass(frozen=True)
 class RMITuningSettings:
     k_candidates: list[int]
     delta_candidates: list[int]
@@ -80,6 +91,7 @@ class ExperimentRunSettings:
 class ExperimentSettings:
     data: DataSettings
     btree: BTreeSettings
+    pgm: PGMSettings
     rmi: RMISettings
     experiment: ExperimentRunSettings
 
@@ -93,6 +105,8 @@ class ExperimentSettings:
 
         data = raw.get("data", {})
         btree = raw.get("btree", {})
+        pgm = raw.get("pgm", {})
+        pgm_tuning = pgm.get("tuning", {})
         rmi = raw.get("rmi", {})
         tuning = rmi.get("tuning", {})
         experiment = raw.get("experiment", {})
@@ -105,6 +119,15 @@ class ExperimentSettings:
                 properties=list(data.get("properties", ["year", "imdbVotes"])),
             ),
             btree=BTreeSettings(order=int(btree.get("order", 64))),
+            pgm=PGMSettings(
+                epsilon=int(pgm.get("epsilon", 64)),
+                tuning=PGMTuningSettings(
+                    epsilon_candidates=[
+                        int(value)
+                        for value in pgm_tuning.get("epsilon_candidates", [8, 16, 32, 64, 128])
+                    ]
+                ),
+            ),
             rmi=RMISettings(
                 k=int(rmi.get("k", 16)),
                 delta=None if auto_delta else int(delta if delta is not None else 0),
